@@ -78,32 +78,72 @@ def perspect_transform(img, src, dst):
     return warped
 
 
+# Segment image into three components, ground (B), rock (G) and non-navigable (R) using
+# color thresholding.
+# Ground color should be above certain level, while rocks are golden so a combination of
+# high red and green with low blue channel values would identify rocks.
+def segment_image(img):
+    # ground thresholding using lower bounds
+    ground_threshold = (175, 175, 175)
+    segmented_image = np.zeros_like(img)
+    ground_mask = color_thresh(img, ground_threshold)
+    # rock thresholding using lower bounds on RG and upper bounds on the blue channel
+    rock_threshold = (120, 120, 60)
+    rock_mask = np.zeros_like(ground_mask)
+    rock_mask[(img[:,:,0] > rock_threshold[0]) & (img[:,:,1] > rock_threshold[1]) & (img[:,:,2] < rock_threshold[2])] = 1
+    # place non-ground pixels in R
+    segmented_image[:,:,0] = 255 * np.logical_not(ground_mask)
+    # place rock mask in G
+    segmented_image[:,:,1] = 255 * (rock_mask & np.logical_not(ground_mask))
+    # place ground pixels in B
+    segmented_image[:,:,2] = 255 * ground_mask
+    return segmented_image
+
+# Gets a set of predefined sources and desinations with its corresponding scale for
+# perspective transform
+def get_predefined_src_dst(img):
+    dst_size = 5
+    bottom_offset = 6
+    source = np.float32([[14, 140], [301 ,140],[200, 96], [118, 96]])
+    destination = np.float32([[img.shape[1]/2 - dst_size, img.shape[0] - bottom_offset],
+                      [img.shape[1]/2 + dst_size, img.shape[0] - bottom_offset],
+                      [img.shape[1]/2 + dst_size, img.shape[0] - 2*dst_size - bottom_offset], 
+                      [img.shape[1]/2 - dst_size, img.shape[0] - 2*dst_size - bottom_offset],
+                  ])
+    scale = 10.0
+    return source, destination, scale
+
+
 # Apply the above functions in succession and update the Rover state accordingly
 def perception_step(Rover):
-    # Perform perception steps to update Rover()
-    # TODO: 
-    # NOTE: camera image is coming to you in Rover.img
-    # 1) Define source and destination points for perspective transform
-    # 2) Apply perspective transform
-    # 3) Apply color threshold to identify navigable terrain/obstacles/rock samples
-    # 4) Update Rover.vision_image (this will be displayed on left side of screen)
-        # Example: Rover.vision_image[:,:,0] = obstacle color-thresholded binary image
-        #          Rover.vision_image[:,:,1] = rock_sample color-thresholded binary image
-        #          Rover.vision_image[:,:,2] = navigable terrain color-thresholded binary image
+    # get the predefined set of source and destinations based on the Rover img size
+    src, dst, scale = get_predefined_src_dst(Rover.img)
+    # segment the image into channels of ground, rock and obstacle, and transform it
+    segmented_image = perspect_transform(segment_image(Rover.img), src, dst)
 
-    # 5) Convert map image pixel values to rover-centric coords
-    # 6) Convert rover-centric pixel values to world coordinates
-    # 7) Update Rover worldmap (to be displayed on right side of screen)
-        # Example: Rover.worldmap[obstacle_y_world, obstacle_x_world, 0] += 1
-        #          Rover.worldmap[rock_y_world, rock_x_world, 1] += 1
-        #          Rover.worldmap[navigable_y_world, navigable_x_world, 2] += 1
+    # extract information from the Rover
+    xpos = Rover.pos[0]
+    ypos = Rover.pos[1]
+    yaw = Rover.yaw
+    world_size = Rover.worldmap.shape[0]
 
-    # 8) Convert rover-centric pixel positions to polar coordinates
-    # Update Rover pixel distances and angles
-        # Rover.nav_dists = rover_centric_pixel_distances
-        # Rover.nav_angles = rover_centric_angles
-    
- 
-    
-    
+    # store the segmentation results in vision_image and add to the mapping in worldmap
+    for ch in range(3):
+        # get segmentation of the channel
+        segment = segmented_image[:,:,ch]
+        # display by storing into vision_image
+        Rover.vision_image[:, :, ch] = segment
+        # convert segment to world coordinates
+        rover_x, rover_y = rover_coords(segment)
+        world_x, world_y = pix_to_world(rover_x, rover_y, xpos, ypos, yaw, world_size, scale)
+        # increment the worldmap's corresponding channel by 10.0
+        Rover.worldmap[world_y, world_x, ch] = Rover.worldmap[world_y, world_x, ch] + 10.0
+
+    # calculate the navigation distances and angles as the ground pixels
+    xpix, ypix = rover_coords(segmented_image[:,:,2])
+    dist, angles = to_polar_coords(xpix, ypix)
+    mean_dir = np.mean(angles)
+    Rover.nav_dists = dist
+    Rover.nav_angles = angles
+
     return Rover
